@@ -11,9 +11,10 @@ DATA = Path(os.getenv("DATA_DIR", BASE / "data"))
 WORK = DATA / "work"          # temporary render folders
 UPLOADS = DATA / "uploads"    # product photos per user
 LOGOS = DATA / "logos"        # one logo per user
+VOICES_DIR = DATA / "voices"  # one cloned-voice sample per user
 MUSIC = BASE / "assets" / "music"  # drop royalty-free .mp3 files here
 
-for _p in (WORK, UPLOADS, LOGOS, MUSIC):
+for _p in (WORK, UPLOADS, LOGOS, VOICES_DIR, MUSIC):
     _p.mkdir(parents=True, exist_ok=True)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -40,6 +41,7 @@ VOICES = {
     "us_f": ("🇺🇸 Aria (F)", "en-US-AriaNeural"),
     "us_m": ("🇺🇸 Guy (M)", "en-US-GuyNeural"),
     "gb_f": ("🇬🇧 Sonia (F)", "en-GB-SoniaNeural"),
+    "mine": ("🎤 My own voice", ""),  # only offered once the user has saved a sample (/myvoice)
 }
 
 # Background colours for scenes that have no footage or photo (fallback cards)

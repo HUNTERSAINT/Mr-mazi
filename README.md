@@ -46,6 +46,12 @@ python bot.py
 
 After two failed clips in a row the bot stops trying for that video and uses animated images, so a broken provider never blocks delivery.
 
+## Your own voice (free voice cloning)
+
+`/myvoice` saves a 15-20 second voice note; "🎤 My own voice" then appears in the voice list and the bot reads every script in a clone of it. It uses [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) (open source, MIT, runs on CPU, English).
+
+Setup: the cloning weights are on Hugging Face under an agreement. Open https://huggingface.co/kyutai/pocket-tts, accept the terms, create a free read token at https://huggingface.co/settings/tokens and set it as `HF_TOKEN`. Without it the bot keeps working with the preset voices. Only clone your own voice; the model's terms forbid impersonation.
+
 ## 3. Add background music (optional)
 
 Drop royalty-free `.mp3` files into `assets/music/`. One is picked at random per video and mixed quietly under the voice. Only use tracks you are allowed to use commercially (for example the YouTube Audio Library or Pixabay Music, check each licence).

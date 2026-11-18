@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import logging
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -17,7 +18,8 @@ from analyze import analyze_product, manual_analysis, summary_text, to_brief
 from assemble import render_video
 from script_writer import write_script
 from visuals import fetch_visuals
-from voice import synth_scene
+from voice import delete_sample, has_sample, prepare_sample, synth_all
+from voice import warmup as voice_warmup
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -30,6 +32,7 @@ WELCOME = (
     "explaining what it is and how it works, ready to post.\n\n"
     "/new – make a video\n"
     "/name – change your business name\n"
+    "/myvoice – save your own voice so I can read your videos in it\n"
     "/logo – save your logo (shown in the corner of every video)\n"
     "/cancel – stop what you're doing\n\n"
     "Videos are vertical (9:16) for TikTok, Reels, Shorts and WhatsApp Status."
@@ -175,7 +178,8 @@ async def got_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _usual(uid: int) -> dict | None:
     p = profiles.get(uid)
     if all(k in p for k in ("tone", "voice", "length")) and p["tone"] in config.TONES \
-            and p["voice"] in config.VOICES and p["length"] in config.LENGTHS:
+            and p["voice"] in config.VOICES and (p["voice"] != "mine" or has_sample(uid)) \
+            and p["length"] in config.LENGTHS:
         return p
     return None
 
@@ -214,7 +218,8 @@ async def got_tone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     context.user_data["tone"] = q.data.split(":")[1]
-    rows = [[(label, f"voice:{k}")] for k, (label, _) in config.VOICES.items()]
+    rows = [[(label, f"voice:{k}")] for k, (label, _) in config.VOICES.items()
+            if k != "mine" or has_sample(update.effective_user.id)]
     await q.edit_message_text("Pick a voice:", reply_markup=_kb(rows))
     return VOICE
 
@@ -286,6 +291,69 @@ async def logo_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Logo saved ✅" if saved else "That wasn't an image. Try /logo again.")
 
 
+# ---------- your own voice ----------
+
+VOICE_SCRIPT = ("Hello, my name is [your name]. I'm recording this so my videos can speak in my own voice. "
+                "I'm talking at a normal pace, in a quiet room, and I'll keep going for about fifteen seconds "
+                "so the sample sounds natural and clear.")
+
+
+async def myvoice_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["awaiting_voice"] = True
+    await update.message.reply_text(
+        "Let's save your voice. Hold the mic and record a voice note of 15–20 seconds in a quiet place, "
+        "speaking naturally. You can read this:\n\n“" + VOICE_SCRIPT + "”\n\n"
+        "Only use your own voice. /cancel to stop.")
+
+
+async def voice_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.pop("awaiting_voice", False):
+        await update.message.reply_text("To save your voice for videos, send /myvoice first.")
+        return
+    uid = update.effective_user.id
+    media = update.message.voice or update.message.audio
+    tmp = config.WORK / f"voice_{uid}_{int(time.time())}"
+    try:
+        await (await media.get_file()).download_to_drive(tmp)
+        secs = await asyncio.to_thread(prepare_sample, tmp, uid)
+    except Exception:
+        log.exception("Could not process voice sample")
+        await update.message.reply_text("I couldn't read that audio. Please send /myvoice and record again.")
+        return
+    finally:
+        tmp.unlink(missing_ok=True)
+    if secs < 6:
+        delete_sample(uid)
+        context.user_data["awaiting_voice"] = True
+        await update.message.reply_text("That was too short. Please record 15–20 seconds and send it again.")
+        return
+
+    await update.message.reply_text("Saved ✅ Testing how it sounds…")
+    test_dir = config.WORK / f"voicetest_{uid}_{int(time.time())}"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        files, fell_back = await synth_all([{"voiceover": "Hi! This is how your voice will sound in your videos."}],
+                                           test_dir, "mine", "+0%", uid)
+        if fell_back:
+            await update.message.reply_text(
+                "Your voice is saved, but voice cloning isn't working on the server right now, so videos will use "
+                "a standard voice until it is fixed.")
+            return
+        ogg = test_dir / "test.ogg"
+        await asyncio.to_thread(lambda: subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(files[0]), "-c:a", "libopus", "-b:a", "48k", str(ogg)],
+            check=True, timeout=60))
+        with open(ogg, "rb") as fh:
+            await update.message.reply_voice(fh)
+        await update.message.reply_text("That's your cloned voice. Choose “🎤 My own voice” when making a video. "
+                                        "Not happy? Send /myvoice and record again in a quieter place.")
+    except Exception:
+        log.exception("Voice test failed")
+        await update.message.reply_text("Your voice is saved, but I couldn't test it just now.")
+    finally:
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+
 # ---------- the job ----------
 
 async def _edit(msg, text: str):
@@ -314,10 +382,7 @@ async def run_job(app: Application, chat_id: int, uid: int, p: dict):
                                           script.get("product_look", ""), lambda t: _edit(status, t))
 
             await _edit(status, "🎙 Recording the voiceover…")
-            voice_name = config.VOICES[p["voice"]][1]
-            rate = config.TONES[p["tone"]][2]
-            audio = [await synth_scene(s["voiceover"], job_dir / f"v{i}.mp3", voice_name, rate)
-                     for i, s in enumerate(script["scenes"])]
+            audio, fell_back = await synth_all(script["scenes"], job_dir, p["voice"], config.TONES[p["tone"]][2], uid)
 
             await _edit(status, "🎬 Rendering your video (about a minute)…")
             brand = config.PALETTE[int(hashlib.md5(p["business"].encode()).hexdigest(), 16) % len(config.PALETTE)]
@@ -328,6 +393,9 @@ async def run_job(app: Application, chat_id: int, uid: int, p: dict):
             with open(final, "rb") as fh:
                 await app.bot.send_video(chat_id, fh, width=1080, height=1920, supports_streaming=True,
                                          read_timeout=120, write_timeout=120)
+        if fell_back:
+            await app.bot.send_message(chat_id, "Note: I couldn't use your own voice this time, so I used a standard "
+                                                "voice. Try /myvoice again if this keeps happening.")
         await app.bot.send_message(chat_id, "Suggested caption:\n\n" + script["caption"],
                                    reply_markup=_kb([[("🔁 Make another version", "redo")]]))
         if uid not in config.ADMIN_IDS:
@@ -359,6 +427,7 @@ async def redo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _post_init(app: Application):
     app.bot_data["sem"] = asyncio.Semaphore(config.MAX_PARALLEL_JOBS)
+    asyncio.create_task(asyncio.to_thread(voice_warmup))
 
 
 def main():
@@ -386,9 +455,11 @@ def main():
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("logo", logo_cmd))
     app.add_handler(CommandHandler("name", name_cmd))
+    app.add_handler(CommandHandler("myvoice", myvoice_cmd))
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(redo, pattern="^redo$"))
     app.add_handler(MessageHandler(img, logo_image))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_note))
     app.add_handler(MessageHandler(text, name_text), group=1)
     log.info("Bot running")
     app.run_polling()
