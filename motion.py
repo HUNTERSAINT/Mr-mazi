@@ -17,7 +17,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 import config
-from music_gen import make_music
+from music_gen import make_calm_music, make_music
 
 log = logging.getLogger(__name__)
 
@@ -85,8 +85,20 @@ def palette_from(photo: str | None, seed: str) -> Palette:
 
 # ---------- fonts, text ----------
 
+_VARIABLE = {"serif": ("PlayfairDisplay-Var.ttf", 560), "serifb": ("PlayfairDisplay-Var.ttf", 700),
+             "corm": ("CormorantGaramond-Var.ttf", 600)}
+
+
 @lru_cache(maxsize=64)
 def font(weight: str, size: int):
+    if weight in _VARIABLE:
+        name, wght = _VARIABLE[weight]
+        try:
+            f = ImageFont.truetype(str(FONT_DIR / name), size)
+            f.set_variation_by_axes([wght])
+            return f
+        except (OSError, AttributeError, ValueError):
+            weight = "bold"
     name = "Poppins-Bold.ttf" if weight == "bold" else "Poppins-Medium.ttf"
     for path in (FONT_DIR / name, Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")):
         try:
@@ -489,8 +501,11 @@ def _probe(path: Path) -> float:
     return float(p.stdout.strip())
 
 
-def render_silent(job_dir: Path, sections: list[dict], durations: list[float], ctx: Ctx, out: Path, progress=None):
-    bg = Background(ctx.pal)
+def render_silent(job_dir: Path, sections: list[dict], durations: list[float], ctx: Ctx, out: Path, progress=None,
+                  theme=None):
+    bg = theme.Background(ctx.pal) if theme else Background(ctx.pal)
+    sections_map = theme.SECTIONS if theme else SECTIONS
+    overlay = theme.draw_overlay if theme else draw_overlay
     total = sum(durations)
     frames_total = int(round(total * FPS))
     log_file = open(job_dir / "ffmpeg_motion.log", "wb")
@@ -503,12 +518,12 @@ def render_silent(job_dir: Path, sections: list[dict], durations: list[float], c
     try:
         offset = 0.0
         for idx, (sec, T) in enumerate(zip(sections, durations)):
-            draw = SECTIONS[sec["type"]]
+            draw = sections_map[sec["type"]]
             for i in range(int(round(T * FPS))):
                 tg = offset + i / FPS
                 frame = bg.frame(tg)
                 draw(frame, i / FPS, T, sec, ctx, idx)
-                draw_overlay(frame, tg, total, ctx)
+                overlay(frame, tg, total, ctx)
                 proc.stdin.write(frame.tobytes())
                 n += 1
                 if progress and n % 90 == 0:
@@ -524,18 +539,21 @@ def render_silent(job_dir: Path, sections: list[dict], durations: list[float], c
 
 
 def build_video(job_dir: Path, sections: list[dict], photos: list[str], business: str, logo: Path | None,
-                audio_files: list[Path] | None, progress=None) -> Path:
+                audio_files: list[Path] | None, progress=None, style: str = "bold") -> Path:
     """sections: [{type, headline, sub, items, tag}], audio_files: one narration clip per section or None."""
     pal = palette_from(photos[0] if photos else None, business)
     ctx = Ctx(pal, photos, business, str(logo) if logo else None)
 
-    durations = [min_duration(s) for s in sections]
+    theme = None
+    if style == "luxury":
+        import luxury as theme
+    durations = [theme.min_duration(s) if theme else min_duration(s) for s in sections]
     if audio_files:
         durations = [max(d, _probe(a) + 0.5) for d, a in zip(durations, audio_files)]
     total = sum(durations)
 
     silent = job_dir / "motion.mp4"
-    render_silent(job_dir, sections, durations, ctx, silent, progress)
+    render_silent(job_dir, sections, durations, ctx, silent, progress, theme)
 
     # narration padded to each section's length, then joined
     voice = None
@@ -556,7 +574,7 @@ def build_video(job_dir: Path, sections: list[dict], photos: list[str], business
         music = random.choice(tracks)
     else:
         music = job_dir / "music.wav"
-        make_music(total, music)
+        (make_calm_music if style == "luxury" else make_music)(total, music)
 
     final = job_dir / "final.mp4"
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(silent)]

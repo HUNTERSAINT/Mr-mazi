@@ -89,3 +89,7 @@ voice.py          edge-tts voiceover per scene
 assemble.py       FFmpeg: clips, captions, music, logo, export
 config.py         Settings, tones, voices
 ```
+
+## Looks
+
+Motion videos come in two looks: **luxury** (default: near-black, gold, serif type, slow photo push with a light sweep, calm music) and **bold** (colourful, punchy). Users switch with `/style`; the default is set with `DEFAULT_THEME`.

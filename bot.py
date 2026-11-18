@@ -35,6 +35,7 @@ WELCOME = (
     "/new – make a video\n"
     "/name – change your business name\n"
     "/myvoice – save your own voice so I can read your videos in it\n"
+    "/style – choose the look: luxury (black & gold) or bold\n"
     "/logo – save your logo (shown in the corner of every video)\n"
     "/cancel – stop what you're doing\n\n"
     "Videos are vertical (9:16) for TikTok, Reels, Shorts and WhatsApp Status."
@@ -310,6 +311,24 @@ VOICE_SCRIPT = ("Hello, my name is [your name]. I'm recording this so my videos 
                 "so the sample sounds natural and clear.")
 
 
+async def style_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    current = profiles.get(update.effective_user.id).get("theme") or config.DEFAULT_THEME
+    rows = [[InlineKeyboardButton(("✅ " if k == current else "") + label, callback_data=f"theme:{k}")]
+            for k, label in config.THEMES.items()]
+    await update.message.reply_text("Pick the look of your videos:", reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def got_theme(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    key = q.data.split(":", 1)[1]
+    if key not in config.THEMES:
+        await q.answer()
+        return
+    profiles.update(update.effective_user.id, theme=key)
+    await q.answer("Saved")
+    await q.edit_message_text(f"Look saved: {config.THEMES[key]}. Send /new to make a video.")
+
+
 async def myvoice_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["awaiting_voice"] = True
     await update.message.reply_text(
@@ -416,8 +435,9 @@ async def _make_motion(app, status, p: dict, job_dir: Path, uid: int):
 
     await _edit(status, "🎬 Animating your video… 0%")
     logos = list(config.LOGOS.glob(f"{uid}.*"))
+    theme = profiles.get(uid).get("theme") or config.DEFAULT_THEME
     final = await asyncio.to_thread(build_video, job_dir, sections, p["photos"], p["business"],
-                                    logos[0] if logos else None, audio, progress)
+                                    logos[0] if logos else None, audio, progress, theme)
     return final, result["caption"], fell_back
 
 
@@ -500,6 +520,8 @@ def main():
     )
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("logo", logo_cmd))
+    app.add_handler(CommandHandler("style", style_cmd))
+    app.add_handler(CallbackQueryHandler(got_theme, pattern="^theme:"))
     app.add_handler(CommandHandler("name", name_cmd))
     app.add_handler(CommandHandler("myvoice", myvoice_cmd))
     app.add_handler(conv)

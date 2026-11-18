@@ -64,3 +64,7 @@ CLIP_TIMEOUT = int(os.getenv("CLIP_TIMEOUT", "240"))
 
 # motion = animated motion-graphics video (default); slideshow = photos with zoom + voiceover
 VIDEO_STYLE = os.getenv("VIDEO_STYLE", "motion").lower()
+
+# looks for the motion video: luxury (black & gold, serif, calm) or bold (colourful, punchy)
+THEMES = {"luxury": "🖤 Luxury (black & gold)", "bold": "⚡ Bold (colourful)"}
+DEFAULT_THEME = os.getenv("DEFAULT_THEME", "luxury") if os.getenv("DEFAULT_THEME", "luxury") in THEMES else "luxury"
