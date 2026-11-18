@@ -1,11 +1,9 @@
 """Turns a business brief into a scene-by-scene script (voiceover + detailed visual prompt) with Gemini."""
-import json
 import logging
 import re
 
-import httpx
-
 import config
+import gemini
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +30,7 @@ Return ONLY valid JSON in exactly this shape:
 Rules:
 - Exactly {n_scenes} scenes. Each voiceover is 10-14 words (about 5 seconds spoken). Total about {words} words.
 - Scene 1 is a scroll-stopping hook. The last scene is a clear call to action that mentions "{business}".
-- Cover the product in detail across scenes: close-up of texture/details, it being used, key benefit, who it is for, variety or sizes if the brief mentions them.
+- This is a product explainer. Follow this order: hook, what the product is, its standout features/materials, how it works (or how it is prepared/made) in simple steps, who it is for and the benefit, call to action. Use the facts in the brief only.
 - visual_prompt must name the product, describe lighting, background and a camera move (slow push-in, orbit, pan, tilt, handheld). Every scene's visual_prompt must reuse the product_look. No on-screen text, logos or watermarks, no people's faces in close-up.
 - Simple spoken English, no emojis, no hashtags inside voiceover.
 - Only state facts that are in the brief. Do not invent prices, discounts, phone numbers or claims.
@@ -89,27 +87,9 @@ async def write_script(business: str, brief: str, tone_key: str, has_photos: boo
                   "and camera moves around the real product." if has_photos else "")
     prompt = PROMPT.format(business=business, brief=brief, tone=tone, photo_note=photo_note,
                            length=length, n_scenes=config.LENGTHS[length], words=int(length * 2.4))
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.9},
-    }
-    # Google retires models often. If the configured one answers 404, try the current ones in turn.
-    models = [config.GEMINI_MODEL] + [m for m in config.GEMINI_FALLBACK_MODELS if m != config.GEMINI_MODEL]
     try:
-        async with httpx.AsyncClient(timeout=90) as client:
-            for model in models:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-                r = await client.post(url, json=body, headers={"x-goog-api-key": config.GEMINI_API_KEY})
-                if r.status_code == 404:
-                    log.warning("Gemini model %s not found, trying the next one", model)
-                    continue
-                r.raise_for_status()
-                text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                break
-            else:
-                raise RuntimeError("none of the Gemini models were available")
-        text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
-        return _clean(json.loads(text), business, length)
+        data = await gemini.generate_json([{"text": prompt}], temperature=0.9)
+        return _clean(data, business, length)
     except Exception:
         log.exception("Gemini script failed, using fallback")
         return _fallback(business, brief)

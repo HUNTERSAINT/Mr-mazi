@@ -2,9 +2,9 @@
 
 A Telegram bot that turns a short business brief into a 30-second vertical (9:16) social video. It runs on free tools only.
 
-**Flow:** business name → brief → optional product photos → tone → voice → video + suggested caption.
+**Flow:** send a photo of the product → AI vision identifies it and shows what it found (you tap ✅ or correct it) → pick tone, voice and length once → video explaining what the product is and how it works + a suggested caption. The business name and your usual settings are saved, so a daily post is: `/new`, photo, `/done`, ✅, ⚡ Same as last time.
 
-**Pipeline:** Gemini writes a scene-by-scene script with a detailed visual prompt per scene → each scene becomes a short AI video clip animated from your product photo (or from a generated image) → edge-tts voiceover → FFmpeg stitches all clips into one video with captions, music and logo.
+**Pipeline:** Gemini vision identifies the product → Gemini writes a scene-by-scene script with a detailed visual prompt per scene → each scene becomes a short AI video clip animated from your product photo (or from a generated image) → edge-tts voiceover → FFmpeg stitches all clips into one video with captions, music and logo.
 
 If a clip can't be generated, that scene falls back to the photo or image with a slow zoom, so a video is always delivered. Clips shorter than their voiceover are slowed slightly and the last frame is held.
 
@@ -52,7 +52,8 @@ Drop royalty-free `.mp3` files into `assets/music/`. One is picked at random per
 
 ## Commands
 
-- `/new` – make a video
+- `/new` – make a video from a product photo
+- `/name` – change your business name
 - `/logo` – save a logo, shown top-right on every video
 - `/cancel` – stop the current flow
 

@@ -1,4 +1,4 @@
-"""Telegram bot: businesses describe what they sell, get back a 30s vertical video."""
+"""Telegram bot: send a product photo, the bot identifies the product and makes an explainer video."""
 import asyncio
 import datetime as dt
 import hashlib
@@ -12,6 +12,8 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, Con
                           ConversationHandler, MessageHandler, filters)
 
 import config
+import profiles
+from analyze import analyze_product, manual_analysis, summary_text, to_brief
 from assemble import render_video
 from script_writer import write_script
 from visuals import fetch_visuals
@@ -21,14 +23,21 @@ logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", le
 logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("bot")
 
-NAME, BRIEF, PHOTOS, TONE, VOICE, LENGTH = range(6)
+NAME, PHOTOS, CONFIRM, FIX, OPTIONS, TONE, VOICE, LENGTH = range(8)
 
 WELCOME = (
-    "Hi! I make 30-second social media videos for your business.\n\n"
-    "/new  – create a video\n"
+    "Hi! Send me a photo of your product and I'll work out what it is, then make a short video "
+    "explaining what it is and how it works, ready to post.\n\n"
+    "/new – make a video\n"
+    "/name – change your business name\n"
     "/logo – save your logo (shown in the corner of every video)\n"
     "/cancel – stop what you're doing\n\n"
-    "Videos are vertical (9:16), ready for TikTok, Reels, Shorts and WhatsApp Status."
+    "Videos are vertical (9:16) for TikTok, Reels, Shorts and WhatsApp Status."
+)
+
+PHOTO_PROMPT = (
+    f"Send a clear photo of the product (up to {config.MAX_PHOTOS} angles), then tap /done.\n"
+    "Tip: add a caption with the brand, flavour or price if you want it mentioned."
 )
 
 
@@ -47,6 +56,10 @@ def _used_today(app: Application, uid: int) -> int:
 
 def _count_use(app: Application, uid: int) -> None:
     app.bot_data["usage"][uid] = (dt.date.today(), _used_today(app, uid) + 1)
+
+
+def _over_limit(app: Application, uid: int) -> bool:
+    return uid not in config.ADMIN_IDS and _used_today(app, uid) >= config.DAILY_LIMIT
 
 
 async def _save_image(msg, dest_stem: Path) -> Path | None:
@@ -77,31 +90,26 @@ async def new(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid in context.application.bot_data.setdefault("busy", set()):
         await update.message.reply_text("I'm still making your last video. Please wait for it first.")
         return ConversationHandler.END
-    if uid not in config.ADMIN_IDS and _used_today(context.application, uid) >= config.DAILY_LIMIT:
+    if _over_limit(context.application, uid):
         await update.message.reply_text(f"You've used your {config.DAILY_LIMIT} free videos for today. Come back tomorrow!")
         return ConversationHandler.END
     shutil.rmtree(_uploads(uid), ignore_errors=True)
     context.user_data.clear()
-    await update.message.reply_text("What's your business name?")
-    return NAME
+    context.user_data.update(photos=[], hint="")
+    business = profiles.get(uid).get("business")
+    if not business:
+        await update.message.reply_text("First, what's your business name? I'll save it for next time.")
+        return NAME
+    context.user_data["business"] = business
+    await update.message.reply_text(f"Making a video for {business}.\n\n{PHOTO_PROMPT}")
+    return PHOTOS
 
 
 async def got_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["business"] = update.message.text.strip()[:80]
-    await update.message.reply_text(
-        "Tell me about the video in a few lines: what you sell or offer, who it's for, "
-        "and anything special (location, delivery, opening hours). I only use facts you give me."
-    )
-    return BRIEF
-
-
-async def got_brief(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["brief"] = update.message.text.strip()[:1200]
-    context.user_data["photos"] = []
-    await update.message.reply_text(
-        f"Send up to {config.MAX_PHOTOS} photos of your product or shop so they appear in the video, "
-        "then tap /done. Or tap /skip to use stock footage only."
-    )
+    business = update.message.text.strip()[:80]
+    profiles.update(update.effective_user.id, business=business)
+    context.user_data["business"] = business
+    await update.message.reply_text(PHOTO_PROMPT)
     return PHOTOS
 
 
@@ -109,13 +117,91 @@ async def got_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photos = context.user_data.setdefault("photos", [])
     saved = await _save_image(update.message, _uploads(update.effective_user.id) / f"p{len(photos)}")
     if not saved:
-        await update.message.reply_text("Please send an image, or /skip.")
+        await update.message.reply_text("Please send an image.")
         return PHOTOS
     photos.append(str(saved))
+    if update.message.caption:
+        context.user_data["hint"] = (context.user_data.get("hint", "") + " " + update.message.caption).strip()[:500]
     if len(photos) >= config.MAX_PHOTOS:
-        return await ask_tone(update, context)
-    await update.message.reply_text(f"Got {len(photos)}. Send more or tap /done.")
+        return await analyze_step(update, context)
+    await update.message.reply_text(f"Got {len(photos)}. Send another angle or tap /done.")
     return PHOTOS
+
+
+async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("photos"):
+        await update.message.reply_text("I need at least one photo of the product first.")
+        return PHOTOS
+    return await analyze_step(update, context)
+
+
+async def _show_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE, a: dict | None):
+    msg = update.effective_message
+    if not a:
+        await msg.reply_text("I couldn't identify it from the photo. Tell me what it is in a line or two "
+                             "(name, brand, what it does) and I'll build the video from that.")
+        return FIX
+    context.user_data["analysis"] = a
+    await msg.reply_text(summary_text(a), reply_markup=_kb([[("✅ Looks right", "ok"), ("✏️ Correct it", "fix")]]))
+    return CONFIRM
+
+
+async def analyze_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text("🔍 Looking at your product…")
+    a = await analyze_product(context.user_data["photos"], context.user_data["business"],
+                              context.user_data.get("hint", ""))
+    return await _show_analysis(update, context, a)
+
+
+async def got_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "fix":
+        await q.edit_message_reply_markup(None)
+        await q.message.reply_text("Tell me what the product really is (name, brand, what it does, how it works).")
+        return FIX
+    await q.edit_message_reply_markup(None)
+    return await ask_options(update, context)
+
+
+async def got_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()[:800]
+    context.user_data["hint"] = text
+    await update.message.reply_text("👍 Got it, checking again…")
+    a = await analyze_product(context.user_data["photos"], context.user_data["business"], text)
+    return await _show_analysis(update, context, a or manual_analysis(text))
+
+
+def _usual(uid: int) -> dict | None:
+    p = profiles.get(uid)
+    if all(k in p for k in ("tone", "voice", "length")) and p["tone"] in config.TONES \
+            and p["voice"] in config.VOICES and p["length"] in config.LENGTHS:
+        return p
+    return None
+
+
+async def ask_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    msg = update.effective_message
+    usual = _usual(uid)
+    if usual:
+        label = (f"⚡ Same as last time ({config.TONES[usual['tone']][0]}, "
+                 f"{config.VOICES[usual['voice']][0]}, {usual['length']}s)")
+        await msg.reply_text("Ready to make the video.", reply_markup=_kb([[(label, "usual")], [("🎛 Change settings", "custom")]]))
+        return OPTIONS
+    return await ask_tone(update, context)
+
+
+async def got_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "usual":
+        u = _usual(update.effective_user.id)
+        if u:
+            context.user_data.update(tone=u["tone"], voice=u["voice"], length=u["length"])
+            await q.edit_message_text("Great, starting your video. This can take a few minutes.")
+            return _launch(update, context, q.message.chat_id)
+    return await ask_tone(update, context)
 
 
 async def ask_tone(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -147,11 +233,21 @@ async def got_length(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     context.user_data["length"] = int(q.data.split(":")[1])
+    profiles.update(update.effective_user.id, tone=context.user_data["tone"],
+                    voice=context.user_data["voice"], length=context.user_data["length"])
     await q.edit_message_text("Great, starting your video. This can take a few minutes.")
-    keys = ("business", "brief", "photos", "tone", "voice", "length")
-    params = {k: context.user_data[k] for k in keys}
-    context.application.bot_data.setdefault("last", {})[update.effective_user.id] = params
-    context.application.create_task(run_job(context.application, q.message.chat_id, update.effective_user.id, params))
+    return _launch(update, context, q.message.chat_id)
+
+
+def _launch(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    ud = context.user_data
+    params = {
+        "business": ud["business"], "brief": to_brief(ud["analysis"], ud.get("hint", "")),
+        "photos": ud["photos"], "tone": ud["tone"], "voice": ud["voice"], "length": ud["length"],
+    }
+    uid = update.effective_user.id
+    context.application.bot_data.setdefault("last", {})[uid] = params
+    context.application.create_task(run_job(context.application, chat_id, uid, params))
     return ConversationHandler.END
 
 
@@ -161,7 +257,18 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# ---------- logo ----------
+# ---------- business name and logo ----------
+
+async def name_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["awaiting_name"] = True
+    await update.message.reply_text("What's your business name?")
+
+
+async def name_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("awaiting_name", False):
+        profiles.update(update.effective_user.id, business=update.message.text.strip()[:80])
+        await update.message.reply_text("Saved ✅")
+
 
 async def logo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["awaiting_logo"] = True
@@ -202,7 +309,7 @@ async def run_job(app: Application, chat_id: int, uid: int, p: dict):
             await _edit(status, "✍️ Writing your script…")
             script = await write_script(p["business"], p["brief"], p["tone"], bool(p["photos"]), p.get("length", 30))
 
-            await _edit(status, "🎞 Finding visuals…")
+            await _edit(status, "🎞 Creating the visuals…")
             visuals = await fetch_visuals(script["scenes"], p["photos"], job_dir,
                                           script.get("product_look", ""), lambda t: _edit(status, t))
 
@@ -240,9 +347,9 @@ async def redo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     params = context.application.bot_data.get("last", {}).get(uid)
     if not params or not all(Path(x).exists() for x in params["photos"]):
-        await q.message.reply_text("I no longer have your details. Send /new to start again.")
+        await q.message.reply_text("I no longer have your photos. Send /new to start again.")
         return
-    if uid not in config.ADMIN_IDS and _used_today(context.application, uid) >= config.DAILY_LIMIT:
+    if _over_limit(context.application, uid):
         await q.message.reply_text(f"You've used your {config.DAILY_LIMIT} free videos for today. Come back tomorrow!")
         return
     context.application.create_task(run_job(context.application, q.message.chat_id, uid, params))
@@ -261,24 +368,28 @@ def main():
 
     img = filters.PHOTO | filters.Document.IMAGE
     text = filters.TEXT & ~filters.COMMAND
+    new_cmd = CommandHandler(["new", "video"], new)
     conv = ConversationHandler(
-        entry_points=[CommandHandler(["new", "video"], new)],
+        entry_points=[new_cmd],
         states={
             NAME: [MessageHandler(text, got_name)],
-            BRIEF: [MessageHandler(text, got_brief)],
-            PHOTOS: [MessageHandler(img, got_photo),
-                     CommandHandler(["done", "skip"], ask_tone)],
+            PHOTOS: [MessageHandler(img, got_photo), CommandHandler("done", done)],
+            CONFIRM: [CallbackQueryHandler(got_confirm, pattern="^(ok|fix)$")],
+            FIX: [MessageHandler(text, got_fix)],
+            OPTIONS: [CallbackQueryHandler(got_options, pattern="^(usual|custom)$")],
             TONE: [CallbackQueryHandler(got_tone, pattern="^tone:")],
             VOICE: [CallbackQueryHandler(got_voice, pattern="^voice:")],
             LENGTH: [CallbackQueryHandler(got_length, pattern="^len:")],
         },
-        fallbacks=[CommandHandler("cancel", cancel), CommandHandler(["new", "video"], new)],
+        fallbacks=[CommandHandler("cancel", cancel), new_cmd],
     )
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("logo", logo_cmd))
+    app.add_handler(CommandHandler("name", name_cmd))
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(redo, pattern="^redo$"))
     app.add_handler(MessageHandler(img, logo_image))
+    app.add_handler(MessageHandler(text, name_text), group=1)
     log.info("Bot running")
     app.run_polling()
 
