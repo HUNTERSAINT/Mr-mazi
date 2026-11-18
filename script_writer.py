@@ -89,16 +89,25 @@ async def write_script(business: str, brief: str, tone_key: str, has_photos: boo
                   "and camera moves around the real product." if has_photos else "")
     prompt = PROMPT.format(business=business, brief=brief, tone=tone, photo_note=photo_note,
                            length=length, n_scenes=config.LENGTHS[length], words=int(length * 2.4))
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent"
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json", "temperature": 0.9},
     }
+    # Google retires models often. If the configured one answers 404, try the current ones in turn.
+    models = [config.GEMINI_MODEL] + [m for m in config.GEMINI_FALLBACK_MODELS if m != config.GEMINI_MODEL]
     try:
         async with httpx.AsyncClient(timeout=90) as client:
-            r = await client.post(url, json=body, headers={"x-goog-api-key": config.GEMINI_API_KEY})
-            r.raise_for_status()
-            text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            for model in models:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+                r = await client.post(url, json=body, headers={"x-goog-api-key": config.GEMINI_API_KEY})
+                if r.status_code == 404:
+                    log.warning("Gemini model %s not found, trying the next one", model)
+                    continue
+                r.raise_for_status()
+                text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                break
+            else:
+                raise RuntimeError("none of the Gemini models were available")
         text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
         return _clean(json.loads(text), business, length)
     except Exception:

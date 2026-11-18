@@ -18,7 +18,8 @@ for _p in (WORK, UPLOADS, LOGOS, MUSIC):
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"]
 
 # Free-hosting protection
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "5"))              # videos per user per day
