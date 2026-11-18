@@ -41,6 +41,7 @@ VOICES = {
     "us_f": ("🇺🇸 Aria (F)", "en-US-AriaNeural"),
     "us_m": ("🇺🇸 Guy (M)", "en-US-GuyNeural"),
     "gb_f": ("🇬🇧 Sonia (F)", "en-GB-SoniaNeural"),
+    "none": ("🔇 No voiceover (music + text)", ""),
     "mine": ("🎤 My own voice", ""),  # only offered once the user has saved a sample (/myvoice)
 }
 
@@ -60,3 +61,6 @@ CLIP_SECONDS = float(os.getenv("CLIP_SECONDS", "5"))
 CLIP_WIDTH = int(os.getenv("CLIP_WIDTH", "544"))
 CLIP_HEIGHT = int(os.getenv("CLIP_HEIGHT", "960"))
 CLIP_TIMEOUT = int(os.getenv("CLIP_TIMEOUT", "240"))
+
+# motion = animated motion-graphics video (default); slideshow = photos with zoom + voiceover
+VIDEO_STYLE = os.getenv("VIDEO_STYLE", "motion").lower()

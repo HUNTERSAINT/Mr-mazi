@@ -16,6 +16,8 @@ import config
 import profiles
 from analyze import analyze_product, manual_analysis, summary_text, to_brief
 from assemble import render_video
+from motion import build_video
+from motion_script import write_sections
 from script_writer import write_script
 from visuals import fetch_visuals
 from voice import delete_sample, has_sample, prepare_sample, synth_all
@@ -258,6 +260,7 @@ def _launch(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     params = {
         "business": ud["business"], "brief": to_brief(ud["analysis"], ud.get("hint", "")),
         "photos": ud["photos"], "tone": ud["tone"], "voice": ud["voice"], "length": ud["length"],
+        "analysis": ud["analysis"],
     }
     uid = update.effective_user.id
     context.application.bot_data.setdefault("last", {})[uid] = params
@@ -372,6 +375,52 @@ async def _edit(msg, text: str):
         pass
 
 
+async def _make_slideshow(app, status, p: dict, job_dir: Path, uid: int):
+    """Photos with a slow zoom plus voiceover (the original style)."""
+    script = await write_script(p["business"], p["brief"], p["tone"], bool(p["photos"]), p.get("length", 30))
+
+    await _edit(status, "🎞 Creating the visuals…")
+    visuals = await fetch_visuals(script["scenes"], p["photos"], job_dir,
+                                  script.get("product_look", ""), lambda t: _edit(status, t))
+
+    await _edit(status, "🎙 Recording the voiceover…")
+    audio, fell_back = await synth_all(script["scenes"], job_dir, p["voice"], config.TONES[p["tone"]][2], uid)
+
+    await _edit(status, "🎬 Rendering your video (about a minute)…")
+    brand = config.PALETTE[int(hashlib.md5(p["business"].encode()).hexdigest(), 16) % len(config.PALETTE)]
+    logos = list(config.LOGOS.glob(f"{uid}.*"))
+    final = await asyncio.to_thread(
+        render_video, job_dir, script["scenes"], visuals, audio, brand, logos[0] if logos else None)
+    return final, script["caption"], fell_back
+
+
+async def _make_motion(app, status, p: dict, job_dir: Path, uid: int):
+    """Animated motion-graphics video: product reveal, feature callouts, steps, call to action."""
+    await _edit(status, "✍️ Writing the content…")
+    result = await write_sections(p["business"], p["brief"], p["tone"], p.get("length", 30), p.get("analysis") or {})
+    sections = result["sections"]
+
+    audio, fell_back = None, False
+    if p["voice"] != "none":
+        await _edit(status, "🎙 Recording the voiceover…")
+        audio, fell_back = await synth_all(sections, job_dir, p["voice"], config.TONES[p["tone"]][2], uid)
+
+    loop = asyncio.get_running_loop()
+    last = {"bucket": -1}
+
+    def progress(frac: float):
+        bucket = int(frac * 10)
+        if bucket != last["bucket"]:
+            last["bucket"] = bucket
+            asyncio.run_coroutine_threadsafe(_edit(status, f"🎬 Animating your video… {bucket * 10}%"), loop)
+
+    await _edit(status, "🎬 Animating your video… 0%")
+    logos = list(config.LOGOS.glob(f"{uid}.*"))
+    final = await asyncio.to_thread(build_video, job_dir, sections, p["photos"], p["business"],
+                                    logos[0] if logos else None, audio, progress)
+    return final, result["caption"], fell_back
+
+
 async def run_job(app: Application, chat_id: int, uid: int, p: dict):
     busy = app.bot_data.setdefault("busy", set())
     if uid in busy:
@@ -384,20 +433,8 @@ async def run_job(app: Application, chat_id: int, uid: int, p: dict):
         async with sem:
             job_dir.mkdir(parents=True, exist_ok=True)
             await _edit(status, "✍️ Writing your script…")
-            script = await write_script(p["business"], p["brief"], p["tone"], bool(p["photos"]), p.get("length", 30))
-
-            await _edit(status, "🎞 Creating the visuals…")
-            visuals = await fetch_visuals(script["scenes"], p["photos"], job_dir,
-                                          script.get("product_look", ""), lambda t: _edit(status, t))
-
-            await _edit(status, "🎙 Recording the voiceover…")
-            audio, fell_back = await synth_all(script["scenes"], job_dir, p["voice"], config.TONES[p["tone"]][2], uid)
-
-            await _edit(status, "🎬 Rendering your video (about a minute)…")
-            brand = config.PALETTE[int(hashlib.md5(p["business"].encode()).hexdigest(), 16) % len(config.PALETTE)]
-            logos = list(config.LOGOS.glob(f"{uid}.*"))
-            final = await asyncio.to_thread(
-                render_video, job_dir, script["scenes"], visuals, audio, brand, logos[0] if logos else None)
+            maker = _make_motion if config.VIDEO_STYLE == "motion" else _make_slideshow
+            final, caption, fell_back = await maker(app, status, p, job_dir, uid)
 
             with open(final, "rb") as fh:
                 await app.bot.send_video(chat_id, fh, width=1080, height=1920, supports_streaming=True,
@@ -405,7 +442,7 @@ async def run_job(app: Application, chat_id: int, uid: int, p: dict):
         if fell_back:
             await app.bot.send_message(chat_id, "Note: I couldn't use your own voice this time, so I used a standard "
                                                 "voice. Try /myvoice again if this keeps happening.")
-        await app.bot.send_message(chat_id, "Suggested caption:\n\n" + script["caption"],
+        await app.bot.send_message(chat_id, "Suggested caption:\n\n" + caption,
                                    reply_markup=_kb([[("🔁 Make another version", "redo")]]))
         if uid not in config.ADMIN_IDS:
             _count_use(app, uid)
