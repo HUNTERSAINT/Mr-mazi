@@ -141,8 +141,10 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _show_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE, a: dict | None):
     msg = update.effective_message
     if not a:
-        await msg.reply_text("I couldn't identify it from the photo. Tell me what it is in a line or two "
-                             "(name, brand, what it does) and I'll build the video from that.")
+        await msg.reply_text("The AI service is busy and I couldn't look at the photo just now. Tap Try again, "
+                             "or tell me what the product is in a line or two (name, brand, what it does) "
+                             "and I'll build the video from that.",
+                             reply_markup=_kb([[("🔄 Try again", "retry")]]))
         return FIX
     context.user_data["analysis"] = a
     await msg.reply_text(summary_text(a), reply_markup=_kb([[("✅ Looks right", "ok"), ("✏️ Correct it", "fix")]]))
@@ -165,6 +167,13 @@ async def got_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return FIX
     await q.edit_message_reply_markup(None)
     return await ask_options(update, context)
+
+
+async def got_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_reply_markup(None)
+    return await analyze_step(update, context)
 
 
 async def got_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -444,7 +453,7 @@ def main():
             NAME: [MessageHandler(text, got_name)],
             PHOTOS: [MessageHandler(img, got_photo), CommandHandler("done", done)],
             CONFIRM: [CallbackQueryHandler(got_confirm, pattern="^(ok|fix)$")],
-            FIX: [MessageHandler(text, got_fix)],
+            FIX: [MessageHandler(text, got_fix), CallbackQueryHandler(got_retry, pattern="^retry$")],
             OPTIONS: [CallbackQueryHandler(got_options, pattern="^(usual|custom)$")],
             TONE: [CallbackQueryHandler(got_tone, pattern="^tone:")],
             VOICE: [CallbackQueryHandler(got_voice, pattern="^voice:")],
