@@ -34,10 +34,12 @@ _ENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv
 def _render_clip(visual: dict, dur: float, out: Path, idx: int, brand_hex: str, cwd: Path) -> None:
     kind, src = visual["kind"], visual["path"]
     if kind == "video":
-        vf = (f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
-              f"fps={FPS},setsar=1,format=yuv420p")
-        _run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", src, "-t", f"{dur:.3f}",
-              "-vf", vf, *_ENC, str(out)], cwd)
+        clip_len = probe_duration(Path(src))
+        # a short generated clip is slowed down up to 1.3x, then its last frame is held to fill the scene
+        slow = min(max(dur / clip_len, 1.0), 1.3) if clip_len > 0 else 1.0
+        vf = (f"setpts={slow:.4f}*PTS,scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
+              f"fps={FPS},setsar=1,tpad=stop_mode=clone:stop_duration={dur:.3f},format=yuv420p")
+        _run(["ffmpeg", "-y", "-i", src, "-t", f"{dur:.3f}", "-vf", vf, *_ENC, str(out)], cwd)
     elif kind == "image":
         frames = int(dur * FPS) + 1
         # alternate slow zoom-in / zoom-out so consecutive photos don't look identical

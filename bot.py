@@ -21,7 +21,7 @@ logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", le
 logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("bot")
 
-NAME, BRIEF, PHOTOS, TONE, VOICE = range(5)
+NAME, BRIEF, PHOTOS, TONE, VOICE, LENGTH = range(6)
 
 WELCOME = (
     "Hi! I make 30-second social media videos for your business.\n\n"
@@ -137,8 +137,19 @@ async def got_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     context.user_data["voice"] = q.data.split(":")[1]
-    await q.edit_message_text("Great, starting your video.")
-    params = {k: context.user_data[k] for k in ("business", "brief", "photos", "tone", "voice")}
+    rows = [[(f"⏱ {s} seconds", f"len:{s}")] for s in config.LENGTHS]
+    await q.edit_message_text("How long should the video be? Longer videos take longer to make.",
+                              reply_markup=_kb(rows))
+    return LENGTH
+
+
+async def got_length(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["length"] = int(q.data.split(":")[1])
+    await q.edit_message_text("Great, starting your video. This can take a few minutes.")
+    keys = ("business", "brief", "photos", "tone", "voice", "length")
+    params = {k: context.user_data[k] for k in keys}
     context.application.bot_data.setdefault("last", {})[update.effective_user.id] = params
     context.application.create_task(run_job(context.application, q.message.chat_id, update.effective_user.id, params))
     return ConversationHandler.END
@@ -189,10 +200,11 @@ async def run_job(app: Application, chat_id: int, uid: int, p: dict):
         async with sem:
             job_dir.mkdir(parents=True, exist_ok=True)
             await _edit(status, "✍️ Writing your script…")
-            script = await write_script(p["business"], p["brief"], p["tone"], bool(p["photos"]))
+            script = await write_script(p["business"], p["brief"], p["tone"], bool(p["photos"]), p.get("length", 30))
 
             await _edit(status, "🎞 Finding visuals…")
-            visuals = await fetch_visuals(script["scenes"], p["photos"], job_dir)
+            visuals = await fetch_visuals(script["scenes"], p["photos"], job_dir,
+                                          script.get("product_look", ""), lambda t: _edit(status, t))
 
             await _edit(status, "🎙 Recording the voiceover…")
             voice_name = config.VOICES[p["voice"]][1]
@@ -258,6 +270,7 @@ def main():
                      CommandHandler(["done", "skip"], ask_tone)],
             TONE: [CallbackQueryHandler(got_tone, pattern="^tone:")],
             VOICE: [CallbackQueryHandler(got_voice, pattern="^voice:")],
+            LENGTH: [CallbackQueryHandler(got_length, pattern="^len:")],
         },
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler(["new", "video"], new)],
     )

@@ -43,3 +43,17 @@ VOICES = {
 
 # Background colours for scenes that have no footage or photo (fallback cards)
 PALETTE = ["0F3D3E", "1B2A49", "5B2A86", "7A1F3D", "14532D", "7C2D12", "0C4A6E", "3F3F46"]
+
+# Video length -> number of ~5 second scenes
+LENGTHS = {30: 6, 45: 9, 60: 12}
+
+# Short AI clip generation (see video_gen.py). hf = free Hugging Face Space, veo = paid, none = animated images only
+VIDEO_PROVIDER = os.getenv("VIDEO_PROVIDER", "hf").lower()
+HF_SPACE = os.getenv("HF_SPACE", "Lightricks/ltx-2")
+HF_API_NAME = os.getenv("HF_API_NAME", "/generate_video")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+VEO_MODEL = os.getenv("VEO_MODEL", "veo-3.1-fast-generate-preview")
+CLIP_SECONDS = float(os.getenv("CLIP_SECONDS", "5"))
+CLIP_WIDTH = int(os.getenv("CLIP_WIDTH", "544"))
+CLIP_HEIGHT = int(os.getenv("CLIP_HEIGHT", "960"))
+CLIP_TIMEOUT = int(os.getenv("CLIP_TIMEOUT", "240"))

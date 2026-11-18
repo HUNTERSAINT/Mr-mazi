@@ -4,7 +4,11 @@ A Telegram bot that turns a short business brief into a 30-second vertical (9:16
 
 **Flow:** business name → brief → optional product photos → tone → voice → video + suggested caption.
 
-**Pipeline:** Gemini (script) → Pollinations (free AI images, no key) / your photos (zoom effect) → edge-tts (voice) → FFmpeg (captions, music, logo, export).
+**Pipeline:** Gemini writes a scene-by-scene script with a detailed visual prompt per scene → each scene becomes a short AI video clip animated from your product photo (or from a generated image) → edge-tts voiceover → FFmpeg stitches all clips into one video with captions, music and logo.
+
+If a clip can't be generated, that scene falls back to the photo or image with a slow zoom, so a video is always delivered. Clips shorter than their voiceover are slowed slightly and the last frame is held.
+
+**Video length:** 30, 45 or 60 seconds (6, 9 or 12 scenes of about 5 seconds).
 
 ## 1. Get the free keys
 
@@ -31,6 +35,16 @@ python bot.py
 **Termux (Android):** `pkg install python ffmpeg fonts-dejavu` (or `ttf-dejavu`), then the same steps. Keep the session alive with `termux-wake-lock`.
 
 **Docker / Render free tier:** the included `Dockerfile` installs FFmpeg and fonts. Set the variables from `.env.example` in the host's dashboard. Free hosts sleep or restart, so expect the bot to go offline sometimes. Run it as a background worker, not a web service, since it uses polling.
+
+## Clip generation (VIDEO_PROVIDER)
+
+| Value | What it uses | Cost |
+|---|---|---|
+| `hf` (default) | A public Hugging Face Space (`HF_SPACE`, default `Lightricks/ltx-2`) through gradio_client | Free, but shared GPUs: slow, queued, can be down or change its API. Set `HF_TOKEN` (free) for a better quota. |
+| `veo` | Google Veo via the Gemini API (`VEO_MODEL`) | Paid, needs billing on the Google project |
+| `none` | No clip generation, animated images only | Free |
+
+After two failed clips in a row the bot stops trying for that video and uses animated images, so a broken provider never blocks delivery.
 
 ## 3. Add background music (optional)
 
